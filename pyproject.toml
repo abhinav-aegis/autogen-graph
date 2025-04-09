@@ -34,5 +34,5 @@ docstring-code-format = true
 prerelease = "allow"
 
 [project.urls]
-Repository = "https://github.com/yourusername/autogen-graph"
-Issues = "https://github.com/yourusername/autogen-graph/issues"
+Repository = "https://github.com/abhinav-aegis/autogen-graph"
+Issues = "https://github.com/abhinav-aegis/autogen-graph/issues"
