@@ -1,10 +1,8 @@
 import asyncio
-import logging
 from typing import AsyncGenerator, List, Sequence
 
 import pytest
 import pytest_asyncio
-from autogen_agentchat import EVENT_LOGGER_NAME
 from autogen_agentchat.agents import (
     AssistantAgent,
     BaseChatAgent,
@@ -18,7 +16,7 @@ from autogen_agentchat.messages import (
     TextMessage,
     MessageFactory
 )
-from autogen_graph._digraph_group_chat import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphNode, DiGraphEdge
+from autogen_graph import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphNode, DiGraphEdge
 from autogen_core import AgentRuntime, CancellationToken, SingleThreadedAgentRuntime
 from autogen_ext.models.replay import ReplayChatCompletionClient
 from pydantic import BaseModel
@@ -856,7 +854,7 @@ async def test_digraph_group_chat_loop_with_exit_condition(runtime):
     assert any(m.content == "exit" for m in result.messages)
 
 @pytest.mark.asyncio
-async def test_digraph_group_chat_parallel_join_any(runtime: AgentRuntime | None):
+async def test_digraph_group_chat_parallel_join_any_1(runtime: AgentRuntime | None):
     agent_a = _EchoAgent("A", description="Echo agent A")
     agent_b = _EchoAgent("B", description="Echo agent B")
     agent_c = _EchoAgent("C", description="Echo agent C")
