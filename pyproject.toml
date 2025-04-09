@@ -1,7 +1,7 @@
 [project]
 name = "autogen-graph"
 version = "0.1.0"
-description = "Add your description here"
+description = "Graph based execution for Autogen agentchat agents"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [

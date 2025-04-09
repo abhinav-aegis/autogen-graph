@@ -16,7 +16,7 @@ from autogen_agentchat.messages import (
     TextMessage,
     MessageFactory
 )
-from autogen_graph._digraph_group_chat import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphNode, DiGraphEdge
+from autogen_graph import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphNode, DiGraphEdge
 from autogen_core import AgentRuntime, CancellationToken, SingleThreadedAgentRuntime
 from autogen_ext.models.replay import ReplayChatCompletionClient
 from pydantic import BaseModel
