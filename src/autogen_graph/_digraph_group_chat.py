@@ -10,8 +10,7 @@ from autogen_agentchat.messages import (
     ChatMessage,
     MessageFactory,
     StopMessage,
-    BaseChatMessage,
-    StructuredMessage
+    BaseChatMessage
 )
 from autogen_agentchat.state import BaseGroupChatManagerState
 from autogen_agentchat.teams import BaseGroupChat
