@@ -7,6 +7,9 @@ requires-python = ">=3.12"
 dependencies = [
     "autogen-agentchat>=0.5.1",
 ]
+license = { text = "MIT" }
+authors = [{ name = "A Somaraju", email = "abhinav@aegis-enterprise.com" }]
+
 
 [dependency-groups]
 dev = [
@@ -15,6 +18,7 @@ dev = [
     "mypy>=1.15.0",
     "pytest>=8.3.5",
     "pytest-asyncio>=0.26.0",
+    "pytest-cov>=6.1.1",
     "ruff>=0.11.4",
 ]
 
@@ -28,3 +32,7 @@ docstring-code-format = true
 
 [tool.uv]
 prerelease = "allow"
+
+[project.urls]
+Repository = "https://github.com/yourusername/autogen-graph"
+Issues = "https://github.com/yourusername/autogen-graph/issues"
