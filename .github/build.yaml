@@ -1,0 +1,40 @@
+name: Build
+
+on: [pull_request]
+
+jobs:
+  build-and-lint:
+    name: Build, Lint, and Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          version: "0.5.12"
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run Ruff (linting)
+        run: uvx ruff check
+
+      - name: Run tests with coverage
+        run: uv run pytest --cov=src/autogen_graph --cov-report=xml
+
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          slug: yourusername/autogen-graph  # <-- Replace yourusername
+          files: ./coverage.xml
+
+      - name: Build the package
+        run: uv build

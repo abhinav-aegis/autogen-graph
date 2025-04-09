@@ -18,18 +18,12 @@ from autogen_agentchat.messages import (
     TextMessage,
     MessageFactory
 )
-from autogen_graph._digraph_group_chat import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphManagerState, DiGraphNode, DiGraphEdge
+from autogen_graph._digraph_group_chat import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphNode, DiGraphEdge
 from autogen_core import AgentRuntime, CancellationToken, SingleThreadedAgentRuntime
 from autogen_ext.models.replay import ReplayChatCompletionClient
 from pydantic import BaseModel
 
 from unittest.mock import patch, AsyncMock
-
-# from utils import FileLogHandler
-# logger = logging.getLogger(EVENT_LOGGER_NAME)
-# logger.setLevel(logging.DEBUG)
-# logger.addHandler(FileLogHandler("test_group_chat.log"))
-
 
 def test_create_digraph():
     """Test creating a simple directed graph."""
