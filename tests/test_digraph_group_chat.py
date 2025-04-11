@@ -16,10 +16,10 @@ from autogen_agentchat.messages import (
     TextMessage,
     MessageFactory
 )
-from autogen_graph import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphNode, DiGraphEdge
 from autogen_core import AgentRuntime, CancellationToken, SingleThreadedAgentRuntime
 from autogen_ext.models.replay import ReplayChatCompletionClient
-from pydantic import BaseModel
+from autogen_graph import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphNode, DiGraphEdge
+from autogen_graph._digraph_group_chat import _DIGRAPH_STOP_AGENT_NAME
 
 from unittest.mock import patch, AsyncMock
 
@@ -457,9 +457,7 @@ async def test_select_speakers_termination(digraph_manager):
     result = await manager.select_speakers(manager._message_thread)
 
     # No speakers left to run, so result should be empty
-    assert result == []
-    # # Termination should have been signaled
-    manager._signal_termination.assert_awaited_once()
+    assert result == [_DIGRAPH_STOP_AGENT_NAME]
 
 @pytest.mark.asyncio
 async def test_select_speakers_conditional_all_activation(digraph_manager):
@@ -559,20 +557,6 @@ class _StopAgent(_EchoAgent):
             return await super().on_messages(messages, cancellation_token)
         return Response(chat_message=StopMessage(content="TERMINATE", source=self.name))
 
-
-def _pass_function(input: str) -> str:
-    return "pass"
-
-
-class _InputTask1(BaseModel):
-    task: str
-    data: List[str]
-
-
-class _InputTask2(BaseModel):
-    task: str
-    data: str
-
 @pytest_asyncio.fixture(params=["single_threaded", "embedded"])  # type: ignore
 async def runtime(request: pytest.FixtureRequest) -> AsyncGenerator[AgentRuntime | None, None]:
     if request.param == "single_threaded":
@@ -612,13 +596,14 @@ async def test_digraph_group_chat_sequential_execution(runtime: AgentRuntime | N
     # Run the chat
     result: TaskResult = await team.run(task="Hello from User")
 
-    assert len(result.messages) == 4
+    assert len(result.messages) == 5
     assert isinstance(result.messages[0], TextMessage)
     assert result.messages[0].source == "user"
     assert result.messages[1].source == "A"
     assert result.messages[2].source == "B"
     assert result.messages[3].source == "C"
-    assert all(isinstance(m, TextMessage) for m in result.messages)
+    assert result.messages[4].source == _DIGRAPH_STOP_AGENT_NAME
+    assert all(isinstance(m, TextMessage) for m in result.messages[:-1])
     assert result.stop_reason is not None
 
 @pytest.mark.asyncio
@@ -643,10 +628,11 @@ async def test_digraph_group_chat_parallel_fanout(runtime: AgentRuntime | None) 
     )
 
     result: TaskResult = await team.run(task="Start")
-    assert len(result.messages) == 4
+    assert len(result.messages) == 5
     assert result.messages[0].source == "user"
     assert result.messages[1].source == "A"
-    assert set(m.source for m in result.messages[2:]) == {"B", "C"}
+    assert set(m.source for m in result.messages[2:-1]) == {"B", "C"}
+    assert result.messages[-1].source == _DIGRAPH_STOP_AGENT_NAME
     assert result.stop_reason is not None
 
 @pytest.mark.asyncio
@@ -671,10 +657,11 @@ async def test_digraph_group_chat_parallel_join_all(runtime: AgentRuntime | None
     )
 
     result: TaskResult = await team.run(task="Go")
-    assert len(result.messages) == 4
+    assert len(result.messages) == 5
     assert result.messages[0].source == "user"
     assert set([result.messages[1].source, result.messages[2].source]) == {"A", "B"}
     assert result.messages[3].source == "C"
+    assert result.messages[-1].source == _DIGRAPH_STOP_AGENT_NAME
     assert result.stop_reason is not None
 
 @pytest.mark.asyncio
@@ -700,12 +687,12 @@ async def test_digraph_group_chat_parallel_join_any(runtime: AgentRuntime | None
 
     result: TaskResult = await team.run(task="Start")
 
-    assert len(result.messages) == 4
+    assert len(result.messages) == 5
     assert result.messages[0].source == "user"
     sources = [m.source for m in result.messages[1:]]
 
     # C must be last
-    assert sources[-1] == "C"
+    assert sources[-2] == "C"
 
     # A and B must both execute
     assert {"A", "B"}.issubset(set(sources))
@@ -715,7 +702,7 @@ async def test_digraph_group_chat_parallel_join_any(runtime: AgentRuntime | None
     index_b = sources.index("B")
     index_c = sources.index("C")
     assert index_c > min(index_a, index_b)
-
+    assert result.messages[-1].source == _DIGRAPH_STOP_AGENT_NAME
     assert result.stop_reason is not None
 
 @pytest.mark.asyncio
@@ -738,9 +725,10 @@ async def test_digraph_group_chat_multiple_start_nodes(runtime: AgentRuntime | N
     )
 
     result: TaskResult = await team.run(task="Start")
-    assert len(result.messages) == 3
+    assert len(result.messages) == 4
     assert result.messages[0].source == "user"
-    assert set(m.source for m in result.messages[1:]) == {"A", "B"}
+    assert set(m.source for m in result.messages[1:-1]) == {"A", "B"}
+    assert result.messages[-1].source == _DIGRAPH_STOP_AGENT_NAME
     assert result.stop_reason is not None
 
 @pytest.mark.asyncio
@@ -767,10 +755,11 @@ async def test_digraph_group_chat_disconnected_graph(runtime: AgentRuntime | Non
     )
 
     result: TaskResult = await team.run(task="Go")
-    assert len(result.messages) == 5
+    assert len(result.messages) == 6
     assert result.messages[0].source == "user"
     assert {"A", "C"} == set([result.messages[1].source, result.messages[2].source])
     assert {"B", "D"} == set([result.messages[3].source, result.messages[4].source])
+    assert result.messages[-1].source == _DIGRAPH_STOP_AGENT_NAME
     assert result.stop_reason is not None
 
 @pytest.mark.asyncio
@@ -842,7 +831,8 @@ async def test_digraph_group_chat_loop_with_exit_condition(runtime):
         "user",
         "A", "B",  # 1st loop
         "A", "B",  # 2nd loop
-        "A", "B", "C"
+        "A", "B", "C",
+        _DIGRAPH_STOP_AGENT_NAME
     ]
 
     actual_sources = [m.source for m in result.messages]
@@ -850,8 +840,9 @@ async def test_digraph_group_chat_loop_with_exit_condition(runtime):
 
     assert actual_sources == expected_sources
     assert result.stop_reason is not None
-    assert result.messages[-1].source == "C"
-    assert any(m.content == "exit" for m in result.messages)
+    assert result.messages[-2].source == "C"
+    assert any(m.content == "exit" for m in result.messages[:-1])
+    assert result.messages[-1].source == _DIGRAPH_STOP_AGENT_NAME
 
 @pytest.mark.asyncio
 async def test_digraph_group_chat_parallel_join_any_1(runtime: AgentRuntime | None):
