@@ -13,7 +13,7 @@ authors = [{ name = "A Somaraju", email = "abhinav@aegis-enterprise.com" }]
 
 [dependency-groups]
 dev = [
-    "autogen-ext>=0.5.1",
+    "autogen-ext[openai]>=0.5.1",
     "ipython>=9.1.0",
     "mypy>=1.15.0",
     "pytest>=8.3.5",

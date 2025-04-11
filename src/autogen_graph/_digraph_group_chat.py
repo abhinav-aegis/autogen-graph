@@ -1,22 +1,31 @@
 import asyncio
-from typing import Any, List, Dict, Set, Callable, Literal
+from typing import Any, List, Dict, Set, Callable, Literal, Sequence
 from pydantic import BaseModel
-from autogen_core import AgentRuntime, Component, ComponentModel
+from autogen_core import AgentRuntime, Component, ComponentModel, CancellationToken
 from typing_extensions import Self
-
-from autogen_agentchat.base import ChatAgent, TerminationCondition
+from autogen_agentchat.conditions import StopMessageTermination
+from autogen_agentchat.base import (
+    ChatAgent,
+    TerminationCondition,
+    Response,
+    OrTerminationCondition
+)
 from autogen_agentchat.messages import (
     AgentEvent,
     ChatMessage,
     MessageFactory,
     StopMessage,
-    BaseChatMessage
+    BaseChatMessage,
+    TextMessage,
 )
 from autogen_agentchat.state import BaseGroupChatManagerState
 from autogen_agentchat.teams import BaseGroupChat
+from autogen_agentchat.agents import BaseChatAgent
 from autogen_agentchat.teams._group_chat._base_group_chat_manager import BaseGroupChatManager
 from autogen_agentchat.teams._group_chat._events import GroupChatTermination
 
+_DIGRAPH_STOP_AGENT_NAME = "DiGraphStopAgent"
+_DIGRAPH_STOP_AGENT_MESSAGE = "Digraph execution is complete"
 
 class DiGraphEdge(BaseModel):
     """Represents a directed edge in a DiGraph, with an optional execution condition."""
@@ -297,11 +306,7 @@ class DiGraphGroupChatManager(BaseGroupChatManager):
             self._active_node_count[speaker] += 1
 
         if not self._pending_execution and not next_speakers and not self._active_nodes:
-            digraph_complete = StopMessage(
-                content="The DiGraph chat has finished executing.",
-                source=self._name,
-            )
-            await self._signal_termination(digraph_complete)
+            next_speakers = [_DIGRAPH_STOP_AGENT_NAME] # Call the termination agent
 
         return list(next_speakers)
 
@@ -313,7 +318,7 @@ class DiGraphGroupChatManager(BaseGroupChatManager):
         topic type of the selected speaker."""
         speakers = await self._select_speakers(thread, many=False)
         if not speakers:
-            return ""
+            raise RuntimeError("No available speakers found.")
         return speakers[0]
 
 
@@ -352,6 +357,22 @@ class DiGraphGroupChatManager(BaseGroupChatManager):
         self._active_node_count = {node: 0 for node in self._graph.nodes}
         self._pending_execution = {node: [] for node in self._start_nodes}
         self._default_start_executed = False
+
+class _StopAgent(BaseChatAgent):
+    def __init__(self) -> None:
+        super().__init__(_DIGRAPH_STOP_AGENT_NAME, "Agent that terminates the DiGraphGroupChat.")
+
+    @property
+    def produced_message_types(self) -> Sequence[type[ChatMessage]]:
+        return (TextMessage, StopMessage)
+
+    async def on_messages(self, messages: Sequence[ChatMessage], cancellation_token: CancellationToken) -> Response:
+        return Response(chat_message=StopMessage(content=_DIGRAPH_STOP_AGENT_MESSAGE, source=self.name))
+
+    async def on_reset(self, cancellation_token: CancellationToken) -> None:
+        pass
+
+
 
 class DiGraphGroupChatConfig(BaseModel):
     """The declarative configuration for DiGraphGroupChat."""
@@ -497,7 +518,7 @@ class DiGraphGroupChat(BaseGroupChat, Component[DiGraphGroupChatConfig]):
     """
 
     component_config_schema = DiGraphGroupChatConfig
-    component_provider_override = "autogen_agentchat.teams.DiGraphGroupChat"
+    component_provider_override = "autogen_agentgraph.DiGraphGroupChat"
 
     def __init__(
         self,
@@ -508,6 +529,12 @@ class DiGraphGroupChat(BaseGroupChat, Component[DiGraphGroupChatConfig]):
         runtime: AgentRuntime | None = None,
         custom_message_types: List[type[AgentEvent | ChatMessage]] | None = None,
     ) -> None:
+        stop_agent = _StopAgent()
+        stop_agent_termination = StopMessageTermination()
+        termination_condition = stop_agent_termination if not termination_condition\
+            else OrTerminationCondition(stop_agent_termination, termination_condition)
+
+        participants = [stop_agent] + participants
         super().__init__(
             participants,
             group_chat_manager_name="DiGraphGroupChatManager",
