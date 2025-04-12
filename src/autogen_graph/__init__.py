@@ -5,6 +5,7 @@ from ._digraph_group_chat import (
     DiGraphNode,
     DiGraphEdge,
 )
+from ._message_filter_agent import MessageFilterAgent, MessageFilterConfig, PerSourceFilter
 
 __all__ = [
     "DiGraphGroupChat",
@@ -12,4 +13,7 @@ __all__ = [
     "DiGraphGroupChatManager",
     "DiGraphNode",
     "DiGraphEdge",
+    "MessageFilterAgent",
+    "MessageFilterConfig",
+    "PerSourceFilter",
 ]
