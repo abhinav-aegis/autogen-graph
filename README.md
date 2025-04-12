@@ -1,78 +1,70 @@
 # autogen-graph
 
-**Directed Graph-based execution engine for Autogen agents.**
+**Directed Graph-based execution engine for Autogen agents, with optional message filtering.**
 
-`autogen-graph` allows you to coordinate multi-agent interactions using a flexible, cycle-aware graph structure. It is designed for modeling complex flows, including sequential chains, loops, conditionals, and fan-out/join patterns, using [Autogen](https://github.com/microsoft/autogen)-compatible agents.
+`autogen-graph` lets you design deterministic, conditional, and cyclic workflows between Autogen-compatible agents. It supports both *graph-based execution control* and *message filtering* to precisely govern **when** agents run and **what messages** they see.
 
 ---
 
-## 💡 Why Graph-Based Workflows?
+## 💡 What Does This Provide?
 
-Autogen currently provides powerful abstractions for team-based agent interaction via group chats. However, its default broadcast-style message flow lacks precise control over agent execution order, branching, and routing.
+Autogen’s default group chats use a broadcast model. While powerful, it lacks precision:
 
-A graph-based execution model brings:
+- Agents can't be triggered conditionally.
+- Message history grows without control.
+- Parallelism and loops require manual workarounds.
 
-- **Explicit control over execution flow**: You define exactly what runs when and where.
-- **Agent context isolation**: Each node is an independent unit that takes one input and emits one output, improving predictability and modularity.
-- **Reusability and clarity**: Each node can encapsulate logic (including group chats) and expose only the final output.
-- **Support for loops, conditions, and escalations**: Graph edges can dynamically route based on message content.
-- **Extensibility**: Enables hybrid orchestration models combining autonomy, rule-based flow, and parallelism.
+`autogen-graph` solves this by introducing:
 
-This aligns with future directions proposed by the Autogen team ([issue #4623](https://github.com/microsoft/autogen/issues/4623)), creating a middle ground between full autonomy and deterministic workflow execution.
+### 🔹 1. Graph-Based Execution (DiGraph)
+Define **who runs next** using nodes and edges.
+
+- Control execution order
+- Support parallel fan-outs, joins, conditionals
+- Handle loops with runtime-safe cycles
+
+### 🔹 2. Message Filtering (`MessageFilterAgent`)
+Control **what messages each agent sees** before they're invoked.
+
+- Restrict to last N messages from a source
+- Include only specific message types or senders
+- Prevent irrelevant context from leaking
+
+This decouples execution routing from message visibility.
 
 ---
 
 ## ✨ Features
 
-- 🔁 Supports agent loops, cycles, and feedback workflows
-- 🔀 Execute parallel fan-outs, join-any/join-all, and content-based branching
-- 🧩 Seamlessly integrates with `AssistantAgent`, `GroupChat`, and Autogen runtimes
-- 🧪 Easily testable using `ReplayChatCompletionClient`
-- 🖥 CLI-friendly with built-in `Console` streaming
+- ✅ Directed graph with support for:
+  - ⏩ Sequential flows
+  - 🔀 Parallel branches and joins
+  - 🔀 Loops with runtime-safe cycles
+  - ❓ Conditional edge activation
+- 🧹 `MessageFilterAgent` to control per-agent context
+- 🧪 Test-friendly with `ReplayChatCompletionClient`
+- 💾 CLI-friendly with `Console` streaming
 
 ---
 
-## 📦 Installation
-
-```bash
-pip install autogen-graph
-```
-
----
-
-## 🚀 Quickstart
+## 📆 Quickstart: Graph-based Flow
 
 ```python
-import asyncio
-
 from autogen_graph import DiGraph, DiGraphNode, DiGraphEdge, DiGraphGroupChat
 from autogen_agentchat.agents import AssistantAgent
 from autogen_agentchat.conditions import TextMentionTermination
-from autogen_agentchat.ui import Console
 from autogen_ext.models.openai import OpenAIChatCompletionClient
+from autogen_agentchat.ui import Console
+import asyncio
 
-# Create OpenAI-backed agents
 model_client = OpenAIChatCompletionClient(model="gpt-4o")
 
-poet = AssistantAgent(
-    name="poet",
-    model_client=model_client,
-    system_message="Write a poem about the ocean."
-)
+# Define agents
+poet = AssistantAgent(name="poet", model_client=model_client, system_message="Write a poem about the ocean.")
+critic = AssistantAgent(name="critic", model_client=model_client, system_message="Critique the poem and say APPROVE or revise.")
+improver = AssistantAgent(name="improve", model_client=model_client, system_message="Improve the poem.")
 
-critic = AssistantAgent(
-    name="critic",
-    model_client=model_client,
-    system_message="Give feedback on the poem. Respond with 'APPROVE' if it's good, otherwise explain what to improve."
-)
-
-improver = AssistantAgent(
-    name="improve",
-    model_client=model_client,
-    system_message="Improve the poem based on the critic's feedback."
-)
-
-# Define a graph: poet → critic → improve
+# Define graph
 graph = DiGraph(
     nodes={
         "poet": DiGraphNode(name="poet", edges=[DiGraphEdge(target="critic")]),
@@ -91,60 +83,52 @@ team = DiGraphGroupChat(
 async def main():
     await Console(team.run_stream("Please write a poem about the ocean."))
 
-if __name__ == "__main__":
-    asyncio.run(main())
+asyncio.run(main())
 ```
 
 ---
 
-## 📁 Project Structure
+## 🔍 Message Filtering Example
 
+You can use `MessageFilterAgent` to restrict what messages an agent receives.
+
+```python
+from autogen_graph import MessageFilterAgent, MessageFilterConfig, PerSourceFilter
+
+filtered_critic = MessageFilterAgent(
+    name="critic",
+    wrapped_agent=critic,
+    filter=MessageFilterConfig(
+        per_source=[
+            PerSourceFilter(source="poet", position="last", count=1),      # only last poet message
+            PerSourceFilter(source="user", position="first", count=1),     # only first user message
+        ]
+    )
+)
+
+team = DiGraphGroupChat(
+    participants=[poet, filtered_critic, improver],
+    graph=graph,
+    termination_condition=TextMentionTermination("APPROVE"),
+)
 ```
-├── LICENSE.md
-├── README.md
-├── examples
-│   ├── conditional.py
-│   ├── loop.py
-│   ├── parallel.py
-│   └── sequential.py
-├── main.py
-├── pyproject.toml
-├── src
-│   └── autogen_graph
-│       ├── __init__.py
-│       └── _digraph_group_chat.py
-├── tests
-│   └── test_digraph_group_chat.py
-└── uv.lock
-```
+
+This ensures `critic` only sees the last message from `poet` and the first message from `user`.
 
 ---
 
-## 🔍 Core Components
+## 🧠 Conceptual Summary
 
-- **DiGraph** – Encodes node-to-node agent execution paths (allows cycles)
-- **DiGraphNode** – Represents an agent + outgoing edges
-- **DiGraphEdge** – Supports optional `condition` for dynamic routing
-- **DiGraphGroupChat** – Executes the graph using agent runtime (optionally threaded)
+| Concept                | Purpose                                 | Component                     |
+|------------------------|------------------------------------------|-------------------------------|
+| Execution control      | Decides **when an agent runs**           | `DiGraph`, `DiGraphGroupChat` |
+| Context filtering      | Decides **what messages an agent sees**  | `MessageFilterAgent`          |
 
----
-
-## 🧪 Examples
-
-Available in `examples/`:
-- `sequential.py` – A → B → C
-- `parallel.py` – fan-out, join-any, join-all
-- `conditional.py` – conditional branching using content triggers
-- `loop.py` – loops and escalation workflows
-
-Run with:
-```bash
-python examples/loop.py
-```
+Both can be combined seamlessly.
 
 ---
 
-## ✅ Running Tests
+## 🧪 Tests
 
 ```bash
 pytest tests/
@@ -152,24 +136,26 @@ pytest tests/
 
 ---
 
+## 📁 Project Structure
+
+```
+src/autogen_graph/
+├── _digraph_group_chat.py      # Main graph runner
+├── _message_filter_agent.py    # Message filtering agent
+├── __init__.py
+```
+
+---
+
 ## 📜 License
 
-MIT © A Somaraju
+MIT ©MIT \xa9 A Somaraju
 
 ---
 
 ## 🙌 Contributions
 
-We welcome PRs! Especially around:
-- graph visualization utilities
-- debugging and trace visualization
-- new edge activation strategies or runtime policies
-
----
-
-## 🗂️ TODO
-
-- [ ] Build a fluent API to simplify graph construction (e.g., `graph.add_node(...).connect(...)` chaining)
-- [ ] Add examples for handling structured messages, including conditional edge routing based on message fields and source filtering (e.g., only forward messages from specific agents)
-
-
+Welcome! Especially around:
+- Graph editors or visualizations
+- New agent container wrappers (e.g., summarizer)
+- Message transformation logic

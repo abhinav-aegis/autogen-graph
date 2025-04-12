@@ -3,6 +3,10 @@ from typing import AsyncGenerator, List, Sequence
 
 import pytest
 import pytest_asyncio
+
+from autogen_core import Component
+from pydantic import BaseModel
+
 from autogen_agentchat.agents import (
     AssistantAgent,
     BaseChatAgent,
@@ -14,11 +18,21 @@ from autogen_agentchat.messages import (
     BaseTextChatMessage as TextChatMessage,
     StopMessage,
     TextMessage,
-    MessageFactory
+    MessageFactory,
+    BaseChatMessage
 )
 from autogen_core import AgentRuntime, CancellationToken, SingleThreadedAgentRuntime
 from autogen_ext.models.replay import ReplayChatCompletionClient
-from autogen_graph import DiGraphGroupChat, DiGraph, DiGraphGroupChatManager, DiGraphNode, DiGraphEdge
+from autogen_graph import (
+    DiGraphGroupChat,
+    DiGraph,
+    DiGraphGroupChatManager,
+    DiGraphNode,
+    DiGraphEdge,
+    MessageFilterAgent,
+    MessageFilterConfig,
+    PerSourceFilter
+)
 from autogen_graph._digraph_group_chat import _DIGRAPH_STOP_AGENT_NAME
 
 from unittest.mock import patch, AsyncMock
@@ -957,3 +971,208 @@ async def test_digraph_group_chat_multiple_conditional(runtime: AgentRuntime | N
     # Test banana branch
     result = await team.run(task="banana")
     assert result.messages[2].source == "C"
+
+
+class _TestMessageFilterAgentConfig(BaseModel):
+    name: str
+    description: str = "Echo test agent"
+
+
+class _TestMessageFilterAgent(BaseChatAgent, Component[_TestMessageFilterAgentConfig]):
+    component_config_schema = _TestMessageFilterAgentConfig
+    component_provider_override="test_digraph_group_chat._TestMessageFilterAgent"
+
+    def __init__(self, name: str, description: str = "Echo test agent") -> None:
+        super().__init__(name=name, description=description)
+        self.received_messages: list[BaseChatMessage] = []
+
+    @property
+    def produced_message_types(self) -> Sequence[type[BaseChatMessage]]:
+        return (TextMessage,)
+
+    async def on_messages(self, messages: Sequence[BaseChatMessage], cancellation_token: CancellationToken) -> Response:
+        self.received_messages.extend(messages)
+        return Response(chat_message=TextMessage(content="ACK", source=self.name))
+
+    async def on_reset(self, cancellation_token: CancellationToken) -> None:
+        self.received_messages.clear()
+
+    def _to_config(self) -> _TestMessageFilterAgentConfig:
+        return _TestMessageFilterAgentConfig(name=self.name, description=self.description)
+
+    @classmethod
+    def _from_config(cls, config: _TestMessageFilterAgentConfig) -> '_TestMessageFilterAgent':
+        return cls(name=config.name, description=config.description)
+
+
+@pytest.mark.asyncio
+async def test_message_filter_agent_empty_filter_blocks_all():
+    inner_agent = _TestMessageFilterAgent("inner")
+    wrapper = MessageFilterAgent(
+        name="wrapper",
+        wrapped_agent=inner_agent,
+        filter=MessageFilterConfig(per_source=[]),
+    )
+    messages = [
+        TextMessage(source="user", content="Hello"),
+        TextMessage(source="system", content="System msg"),
+    ]
+    await wrapper.on_messages(messages, CancellationToken())
+    assert len(inner_agent.received_messages) == 0
+
+
+@pytest.mark.asyncio
+async def test_message_filter_agent_with_position_none_gets_all():
+    inner_agent = _TestMessageFilterAgent("inner")
+    wrapper = MessageFilterAgent(
+        name="wrapper",
+        wrapped_agent=inner_agent,
+        filter=MessageFilterConfig(per_source=[PerSourceFilter(source="user", position=None, count=None)]),
+    )
+    messages = [
+        TextMessage(source="user", content="A"),
+        TextMessage(source="user", content="B"),
+        TextMessage(source="system", content="Ignore this"),
+    ]
+    await wrapper.on_messages(messages, CancellationToken())
+    assert len(inner_agent.received_messages) == 2
+    assert {m.content for m in inner_agent.received_messages} == {"A", "B"}
+
+
+@pytest.mark.asyncio
+async def test_message_filter_agent_to_and_from_config():
+    inner_agent = _TestMessageFilterAgent("agent")
+    wrapper = MessageFilterAgent(
+        name="agent",
+        wrapped_agent=inner_agent,
+        filter=MessageFilterConfig(
+            per_source=[
+                PerSourceFilter(source="user", position="last", count=2),
+                PerSourceFilter(source="system", position="first", count=1),
+            ]
+        ),
+    )
+    config = wrapper.dump_component()
+    loaded = MessageFilterAgent.load_component(config)
+    assert loaded.name == "agent"
+    assert loaded._filter == wrapper._filter
+    assert loaded._wrapped_agent.name == wrapper._wrapped_agent.name
+
+    # Run on_messages and validate filtering still works
+    messages = [
+        TextMessage(source="user", content="u1"),
+        TextMessage(source="user", content="u2"),
+        TextMessage(source="user", content="u3"),
+        TextMessage(source="system", content="s1"),
+        TextMessage(source="system", content="s2"),
+    ]
+    await loaded.on_messages(messages, CancellationToken())
+    received = loaded._wrapped_agent.received_messages
+    assert {m.content for m in received} == {"u2", "u3", "s1"}
+
+
+@pytest.mark.asyncio
+async def test_message_filter_agent_in_digraph_group_chat(runtime):
+    inner_agent = _TestMessageFilterAgent("filtered")
+    filtered = MessageFilterAgent(
+        name="filtered",
+        wrapped_agent=inner_agent,
+        filter=MessageFilterConfig(
+            per_source=[
+                PerSourceFilter(source="user", position="last", count=1),
+            ]
+        ),
+    )
+
+    graph = DiGraph(
+        nodes={
+            "filtered": DiGraphNode(name="filtered", edges=[]),
+        }
+    )
+
+    team = DiGraphGroupChat(
+        participants=[filtered],
+        graph=graph,
+        runtime=runtime,
+        termination_condition=MaxMessageTermination(3),
+    )
+
+    result = await team.run(task="only last user message matters")
+    assert result.stop_reason is not None
+    assert any(msg.source == "filtered" for msg in result.messages)
+    assert any(msg.content == "ACK" for msg in result.messages if msg.source == "filtered")
+
+
+@pytest.mark.asyncio
+async def test_message_filter_agent_loop_graph_visibility(runtime):
+    agent_a_inner = _TestMessageFilterAgent("A")
+    agent_a = MessageFilterAgent(
+        name="A",
+        wrapped_agent=agent_a_inner,
+        filter=MessageFilterConfig(per_source=[
+            PerSourceFilter(source="user", position="first", count=1),
+            PerSourceFilter(source="B", position="last", count=1),
+        ]),
+    )
+
+    from autogen_ext.models.replay import ReplayChatCompletionClient
+    from autogen_agentchat.agents import AssistantAgent
+
+    model_client = ReplayChatCompletionClient(["loop", "loop", "exit"])
+    agent_b_inner = AssistantAgent("B", model_client=model_client)
+    agent_b = MessageFilterAgent(
+        name="B",
+        wrapped_agent=agent_b_inner,
+        filter=MessageFilterConfig(per_source=[
+            PerSourceFilter(source="user", position="first", count=1),
+            PerSourceFilter(source="A", position="last", count=1),
+            PerSourceFilter(source="B", position="last", count=10),
+        ]),
+    )
+
+    agent_c_inner = _TestMessageFilterAgent("C")
+    agent_c = MessageFilterAgent(
+        name="C",
+        wrapped_agent=agent_c_inner,
+        filter=MessageFilterConfig(per_source=[
+            PerSourceFilter(source="user", position="first", count=1),
+            PerSourceFilter(source="B", position="last", count=1),
+        ]),
+    )
+
+    graph = DiGraph(
+        nodes={
+            "A": DiGraphNode(name="A", edges=[DiGraphEdge(target="B")]),
+            "B": DiGraphNode(name="B", edges=[
+                DiGraphEdge(target="C", condition="exit"),
+                DiGraphEdge(target="A", condition="loop"),
+            ]),
+            "C": DiGraphNode(name="C", edges=[]),
+        },
+        default_start_node="A",
+    )
+
+    team = DiGraphGroupChat(
+        participants=[agent_a, agent_b, agent_c],
+        graph=graph,
+        runtime=runtime,
+        termination_condition=MaxMessageTermination(20),
+    )
+
+    result = await team.run(task="Start")
+    assert result.stop_reason is not None
+
+    # Check A received: 1 user + 2 from B
+    assert [m.source for m in agent_a_inner.received_messages].count("user") == 1
+    assert [m.source for m in agent_a_inner.received_messages].count("B") == 2
+
+    # Check C received: 1 user + 1 from B
+    assert [m.source for m in agent_c_inner.received_messages].count("user") == 1
+    assert [m.source for m in agent_c_inner.received_messages].count("B") == 1
+
+    # Check B received: 1 user + multiple from A + own messages
+    model_msgs = await agent_b_inner.model_context.get_messages()
+    sources = [m.source for m in model_msgs]
+    assert sources.count("user") == 1
+    assert sources.count("A") >= 3  # One per loop iteration
+    assert sources.count("B") >= 2  # At least 2 of its own reflections
