@@ -31,7 +31,8 @@ from autogen_graph import (
     DiGraphEdge,
     MessageFilterAgent,
     MessageFilterConfig,
-    PerSourceFilter
+    PerSourceFilter,
+    AGGraphBuilder
 )
 from autogen_graph._digraph_group_chat import _DIGRAPH_STOP_AGENT_NAME
 
@@ -1176,3 +1177,214 @@ async def test_message_filter_agent_loop_graph_visibility(runtime):
     assert sources.count("user") == 1
     assert sources.count("A") >= 3  # One per loop iteration
     assert sources.count("B") >= 2  # At least 2 of its own reflections
+
+# Test Graph Builder
+def test_add_node():
+    client = ReplayChatCompletionClient(["response"])
+    agent = AssistantAgent("A", model_client=client)
+    builder = AGGraphBuilder()
+    builder.add_node(agent)
+
+    assert "A" in builder.nodes
+    assert "A" in builder.agents
+    assert builder.nodes["A"].activation == "all"
+
+
+def test_add_edge():
+    client = ReplayChatCompletionClient(["1", "2"])
+    a = AssistantAgent("A", model_client=client)
+    b = AssistantAgent("B", model_client=client)
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b)
+    builder.add_edge(a, b)
+
+    assert builder.nodes["A"].edges[0].target == "B"
+    assert builder.nodes["A"].edges[0].condition is None
+
+
+def test_add_conditional_edges():
+    client = ReplayChatCompletionClient(["1", "2"])
+    a = AssistantAgent("A", model_client=client)
+    b = AssistantAgent("B", model_client=client)
+    c = AssistantAgent("C", model_client=client)
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b).add_node(c)
+    builder.add_conditional_edges(a, {"yes": b, "no": c})
+
+    edges = builder.nodes["A"].edges
+    assert len(edges) == 2
+    conditions = {e.condition for e in edges}
+    targets = {e.target for e in edges}
+    assert conditions == {"yes", "no"}
+    assert targets == {"B", "C"}
+
+
+def test_set_entry_point():
+    client = ReplayChatCompletionClient(["ok"])
+    a = AssistantAgent("A", model_client=client)
+    builder = AGGraphBuilder().add_node(a).set_entry_point(a)
+    graph = builder.build()
+
+    assert graph.default_start_node == "A"
+
+
+def test_build_graph_validation():
+    client = ReplayChatCompletionClient(["1", "2", "3"])
+    a = AssistantAgent("A", model_client=client)
+    b = AssistantAgent("B", model_client=client)
+    c = AssistantAgent("C", model_client=client)
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b).add_node(c)
+    builder.add_edge("A", "B").add_edge("B", "C")
+    builder.set_entry_point("A")
+    graph = builder.build()
+
+    assert isinstance(graph, DiGraph)
+    assert set(graph.nodes.keys()) == {"A", "B", "C"}
+    assert graph.get_start_nodes() == {"A"}
+    assert graph.get_leaf_nodes() == {"C"}
+
+def test_build_fan_out():
+    client = ReplayChatCompletionClient(["hi"] * 3)
+    a = AssistantAgent("A", model_client=client)
+    b = AssistantAgent("B", model_client=client)
+    c = AssistantAgent("C", model_client=client)
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b).add_node(c)
+    builder.add_edge(a, b).add_edge(a, c)
+    builder.set_entry_point(a)
+    graph = builder.build()
+
+    assert graph.get_start_nodes() == {"A"}
+    assert graph.get_leaf_nodes() == {"B", "C"}
+
+
+def test_build_parallel_join():
+    client = ReplayChatCompletionClient(["go"] * 3)
+    a = AssistantAgent("A", model_client=client)
+    b = AssistantAgent("B", model_client=client)
+    c = AssistantAgent("C", model_client=client)
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b).add_node(c, activation="all")
+    builder.add_edge(a, c).add_edge(b, c)
+    builder.set_entry_point(a)
+    builder.add_edge(b, c)
+    builder.nodes["B"] = DiGraphNode(name="B", edges=[DiGraphEdge(target="C")])
+    graph = builder.build()
+
+    assert graph.nodes["C"].activation == "all"
+    assert graph.get_leaf_nodes() == {"C"}
+
+
+def test_build_conditional_loop():
+    client = ReplayChatCompletionClient(["loop", "loop", "exit"])
+    a = AssistantAgent("A", model_client=client)
+    b = AssistantAgent("B", model_client=client)
+    c = AssistantAgent("C", model_client=client)
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b).add_node(c)
+    builder.add_edge(a, b)
+    builder.add_conditional_edges(b, {"loop": a, "exit": c})
+    builder.set_entry_point(a)
+    graph = builder.build()
+
+    assert graph.nodes["B"].edges[0].condition == "loop"
+    assert graph.nodes["B"].edges[1].condition == "exit"
+    assert graph.has_cycles_with_exit()
+
+@pytest.mark.asyncio
+async def test_graph_builder_sequential_execution(runtime):
+    a = _EchoAgent("A", description="Echo A")
+    b = _EchoAgent("B", description="Echo B")
+    c = _EchoAgent("C", description="Echo C")
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b).add_node(c)
+    builder.add_edge(a, b).add_edge(b, c)
+
+    team = DiGraphGroupChat(
+        participants=builder.get_participants(),
+        graph=builder.build(),
+        runtime=runtime,
+        termination_condition=MaxMessageTermination(5),
+    )
+
+    result = await team.run(task="Start")
+    assert [m.source for m in result.messages[1:-1]] == ["A", "B", "C"]
+    assert result.stop_reason is not None
+
+
+@pytest.mark.asyncio
+async def test_graph_builder_fan_out(runtime):
+    a = _EchoAgent("A", description="Echo A")
+    b = _EchoAgent("B", description="Echo B")
+    c = _EchoAgent("C", description="Echo C")
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b).add_node(c)
+    builder.add_edge(a, b).add_edge(a, c)
+
+    team = DiGraphGroupChat(
+        participants=builder.get_participants(),
+        graph=builder.build(),
+        runtime=runtime,
+        termination_condition=MaxMessageTermination(5),
+    )
+
+    result = await team.run(task="Start")
+    sources = [m.source for m in result.messages if isinstance(m, TextMessage)]
+    assert set(sources[1:]) == {"A", "B", "C"}
+    assert result.stop_reason is not None
+
+
+@pytest.mark.asyncio
+async def test_graph_builder_conditional_execution(runtime):
+    a = _EchoAgent("A", description="Echo A")
+    b = _EchoAgent("B", description="Echo B")
+    c = _EchoAgent("C", description="Echo C")
+
+    builder = AGGraphBuilder()
+    builder.add_node(a).add_node(b).add_node(c)
+    builder.add_conditional_edges(a, {"yes": b, "no": c})
+
+    team = DiGraphGroupChat(
+        participants=builder.get_participants(),
+        graph=builder.build(),
+        runtime=runtime,
+        termination_condition=MaxMessageTermination(5),
+    )
+
+    result = await team.run(task="no")
+    sources = [m.source for m in result.messages]
+    assert "C" in sources
+    assert result.stop_reason is not None
+
+
+@pytest.mark.asyncio
+async def test_graph_builder_with_filter_agent(runtime):
+    inner = _EchoAgent("X", description="Echo X")
+    filter_agent = MessageFilterAgent(
+        name="X",
+        wrapped_agent=inner,
+        filter=MessageFilterConfig(per_source=[PerSourceFilter(source="user", position="last", count=1)]),
+    )
+
+    builder = AGGraphBuilder()
+    builder.add_node(filter_agent)
+
+    team = DiGraphGroupChat(
+        participants=builder.get_participants(),
+        graph=builder.build(),
+        runtime=runtime,
+        termination_condition=MaxMessageTermination(3),
+    )
+
+    result = await team.run(task="Hello")
+    assert any(m.source == "X" and m.content == "Hello" for m in result.messages)
+    assert result.stop_reason is not None
