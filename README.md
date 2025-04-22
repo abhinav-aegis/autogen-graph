@@ -1,3 +1,8 @@
+> **⚠️ This repository is archived.**  
+> The functionality of `autogen-graph` has been merged into the official [`autogen`](https://github.com/microsoft/autogen) package.  
+> Please use the main `autogen` repository for future updates and contributions.
+
+
 # autogen-graph
 
 **Directed Graph-based execution engine for Autogen agents, with optional message filtering.**
